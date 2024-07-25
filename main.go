@@ -1,17 +1,22 @@
 package main
 
 import (
+	"context"
 	"github.com/labstack/echo/v4"
-	"gorm.io/gorm/logger"
-	"log"
-	"net/http"
-
 	"github.com/labstack/echo/v4/middleware"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/labstack/echo/otelecho"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 	"gorm.io/plugin/opentelemetry/tracing"
+	"log"
+	"net/http"
 )
 
 // Sample database model
@@ -20,7 +25,42 @@ type User struct {
 	Name string `gorm:"index"`
 }
 
+func initTracer() func() {
+	exporter, err := otlptrace.New(
+		context.Background(),
+		otlptracehttp.NewClient(
+			otlptracehttp.WithEndpoint("localhost:4317"), // SigNoz OTLP endpoint
+			otlptracehttp.WithInsecure(),
+		),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	resource := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceNameKey.String("example-service"),
+	)
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(resource),
+	)
+
+	otel.SetTracerProvider(tp)
+
+	return func() {
+		if err := tp.Shutdown(context.Background()); err != nil {
+			log.Printf("Error shutting down tracer provider: %v", err)
+		}
+	}
+}
+
 func main() {
+	// Initialize SigNoz tracer
+	shutdown := initTracer()
+	defer shutdown()
+
 	e := echo.New()
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
